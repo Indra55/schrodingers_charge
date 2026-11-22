@@ -59,17 +59,19 @@
     .edge[data-direction="back"]::after { right: auto; left: 2px; transform: rotate(225deg); }
     .edge[data-direction="fault"] { height: 0; border-top: 1px dashed #aaa; background: none; }
     .edge[data-direction="fault"]::after { display: none; }
-    .flow-status { min-height: 1.5em; margin-top: 14px; color: var(--muted); font-size: .85rem; line-height: 1.5; }
-    .flow-status[data-error="true"] { color: #fff; }
-    .guide { margin-top: 12px; }
-    .guide summary { width: fit-content; cursor: pointer; font-size: .85rem; }
-    .guide-content { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px 28px; margin-top: 14px; }
-    .guide p + p { margin-top: 5px; }
-    .guide h3 { margin-bottom: 5px; font-size: .8rem; font-weight: 600; }
-    .guide p, .guide dl { color: var(--muted); font-size: .83rem; line-height: 1.55; }
-    .guide dl { display: grid; gap: 5px; margin: 0; }
+    .guide { margin-top: 20px; }
+    .guide-content { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.35fr); gap: 12px; margin-top: 12px; }
+    .guide-content > div { min-width: 0; padding: 12px; border: 1px solid var(--line); border-radius: 4px; }
+    .guide h3 { margin-bottom: 6px; font-size: .8rem; font-weight: 600; }
+    .guide p, .guide dl { color: var(--muted); font-size: .83rem; line-height: 1.55; overflow-wrap: anywhere; }
+    .guide p[data-error="true"] { color: #fff; }
+    .guide dl { display: grid; gap: 6px; margin: 0; }
+    .guide [hidden] { display: none; }
     .guide dt { display: inline; color: #fff; }
     .guide dd { display: inline; margin: 0; }
+    .reference { margin-top: 12px; }
+    .reference summary { width: fit-content; cursor: pointer; font-size: .83rem; }
+    .reference p { margin-top: 6px; }
     .trace { padding-top: 22px; }
     .trace-head { display: flex; flex-wrap: wrap; gap: 8px 16px; justify-content: space-between; align-items: baseline; }
     .payment-id { color: var(--muted); font-size: .73rem; overflow-wrap: anywhere; }
@@ -137,34 +139,26 @@
           <output id="provider-state">Loading…</output>
         </div>
       </div>
-      <p class="flow-status" id="feedback" role="status"></p>
-      <details class="guide">
-        <summary>How it works</summary>
+      <section class="guide" aria-labelledby="guide-title">
+        <h2 id="guide-title">How it works</h2>
         <div class="guide-content">
           <div>
-            <h3>Read the diagram</h3>
-            <p>The browser starts an action. The merchant keeps the payment pending until it confirms the charge. The provider counts charges for the payment ID. Both Go services use SQLite.</p>
-            <p>Arrows show requests and replies. A dashed line marks a failed request.</p>
+            <h3>Now</h3>
+            <p id="feedback" role="status">Reading both ledgers…</p>
           </div>
           <div>
-            <h3>Try an action</h3>
-            <dl>
-              <div><dt>Pay ₹499.</dt> <dd>Save a pending test payment and send it to the provider.</dd></div>
-              <div><dt>Reconcile.</dt> <dd>Check the provider first. Retry only if the charge is missing.</dd></div>
-              <div><dt>Race two retries.</dt> <dd>Send two retries for the same missing charge.</dd></div>
-              <div><dt>Reset.</dt> <dd>Start with a fresh payment ID.</dd></div>
-            </dl>
-          </div>
-          <div>
-            <h3>Why retries keep one charge</h3>
-            <p>Every retry reuses the payment ID. SQLite permits one charge per ID. The provider returns the existing charge on a retry.</p>
-          </div>
-          <div>
-            <h3>Read the trace</h3>
-            <p>GET checks for a charge. POST sends a charge request. HTTP 201 means a new charge. 200 returns an existing charge. 404 means missing. 503 means unavailable.</p>
+            <h3>Next</h3>
+            <p id="guide-wait">The available actions appear when both services reply.</p>
+            <dl id="guide-actions" hidden></dl>
           </div>
         </div>
-      </details>
+        <details class="reference">
+          <summary>Diagram and trace reference</summary>
+          <p>Arrows show requests and replies. A dashed arrow marks a failed request. The merchant and provider each store their own state in SQLite.</p>
+          <p>GET checks for a charge. POST sends a charge request. 201 means a new charge. 200 returns an existing charge. 404 means missing. 503 means unavailable.</p>
+          <p>The payment ID is the idempotency key. The provider’s SQLite database allows one charge per ID, even when two workers retry.</p>
+        </details>
+      </section>
     </section>
 
     <section class="trace" aria-labelledby="trace-title">
@@ -201,6 +195,19 @@
     const events = get("events");
     const empty = get("empty");
     const feedback = get("feedback");
+    const guideWait = get("guide-wait");
+    const guideActions = get("guide-actions");
+    const payOutcomes = {
+      timeout: "Save the charge at the provider. The merchant times out and stays pending.",
+      offline: "Leave the merchant pending with zero charges at the provider.",
+      normal: "Create one charge and mark the payment paid."
+    };
+    const startSteps = {
+      "": ["Reading both ledgers…", "The available actions appear when both services reply."],
+      pay: ["Sending a ₹499 test payment.", "The merchant saves the payment as pending before it calls the provider."],
+      reconcile: ["Reconcile is checking the saved payment.", "If it is pending, the merchant looks up the charge before it decides whether to retry."],
+      race: ["Preparing two retries for this payment ID.", "Both workers check for the charge before they send a retry."]
+    };
     const storageKey = "schrodinger-charge-payment-id";
     const scenarioKey = "schrodinger-charge-scenario";
     const streamType = "application/x-ndjson";
@@ -238,6 +245,47 @@
       race.disabled = busy || status !== "pending" || count !== 0;
       reset.disabled = busy;
       empty.hidden = events.childElementCount > 0;
+      renderGuide();
+    }
+
+    function renderGuide() {
+      guideWait.hidden = !busy;
+      guideActions.hidden = busy;
+      if (busy) return;
+
+      const options = [
+        [pay, payOutcomes[scenario.value]],
+        [reconcile, reconcileOutcome()],
+        [race, "Check twice, then retry with the same ID in both requests. The provider can insert one charge."],
+        [reset, "Start with a new payment ID and choose another scenario."]
+      ];
+      const items = [];
+      if (!state) items.push(guideItem("Reload", "Check both ledgers again for the same payment ID."));
+      for (const [button, description] of options) {
+        if (!button.disabled) items.push(guideItem(button.textContent, description));
+      }
+      guideActions.replaceChildren(...items);
+    }
+
+    function guideItem(label, description) {
+      const entry = document.createElement("div");
+      const term = document.createElement("dt");
+      const detail = document.createElement("dd");
+      term.textContent = label + ". ";
+      detail.textContent = description;
+      entry.append(term, detail);
+      return entry;
+    }
+
+    function reconcileOutcome() {
+      if (state?.merchant_status === "paid") return "The merchant confirms the payment is already paid.";
+      if (state?.provider_count === 1) return "Look up the existing charge and mark it paid after confirmation.";
+      return "Look up the charge and retry with the same ID if the provider returns 404.";
+    }
+
+    function setStep(now, next) {
+      feedback.textContent = now;
+      guideWait.textContent = next;
     }
 
     function appendTrace(message) {
@@ -247,38 +295,51 @@
       empty.hidden = true;
     }
 
-    function showEvent(event) {
+    function showEvent(event, action) {
       appendTrace(event.message);
       switch (event.phase) {
         case "merchant":
-          if (state) state.merchant_status = event.label.toLowerCase();
           merchantState.value = event.label;
           highlight("merchant");
-          feedback.textContent = event.message;
+          setStep(event.message, event.label === "Pending"
+            ? "The merchant sends the payment ID and amount to the provider."
+            : "The demo reads both ledgers and returns their current state.");
           break;
-        case "request":
+        case "request": {
+          const lookup = event.label.startsWith("GET ");
           highlight("provider", "forward");
-          feedback.textContent = "Waiting for " + event.label;
+          setStep(lookup ? "Looking up the payment ID at the provider." : "Sending the charge request to the provider.",
+            lookup ? "The provider checks its SQLite ledger." : "SQLite allows one charge per payment ID.");
           break;
+        }
         case "response":
           highlight("merchant", "back");
-          feedback.textContent = "Provider replied " + event.label;
+          if (event.label === "HTTP 404") {
+            setStep("The provider found no charge for this payment ID.", action === "race"
+              ? "The workers send their retries after both lookups report a missing charge."
+              : "The merchant retries the original charge with the same ID.");
+          } else if (event.label === "HTTP 200" || event.label === "HTTP 201") {
+            setStep(event.label === "HTTP 201" ? "The provider created a charge." : "The provider returned the existing charge.",
+              "The merchant verifies the payment ID and amount before saving Paid.");
+          } else {
+            setStep("The provider replied " + event.label + ".", "The demo checks what each ledger saved.");
+          }
           break;
         case "fault":
           highlight("merchant", "fault");
-          feedback.textContent = event.message;
+          setStep(event.message, "The demo reads both ledgers to show what each service saved.");
           break;
       }
     }
 
-    async function readStream(response) {
+    async function readStream(response, action) {
       const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
       let pending = "";
       let result;
       function packet(line) {
         const value = JSON.parse(line);
         if (value.error) throw new Error(value.error);
-        if (value.event) showEvent(value.event);
+        if (value.event) showEvent(value.event, action);
         if (value.state) result = value.state;
       }
       try {
@@ -298,15 +359,12 @@
     }
 
     function explainResult() {
+      if (state.merchant_status === "none") return "This payment ID is ready for a test charge.";
+      const count = state.provider_count === 1 ? "one charge" : "zero charges";
       if (state.merchant_status === "pending") {
-        return state.provider_count === 1
-          ? "The provider has one charge. Select Reconcile to confirm the payment."
-          : "The provider has zero charges. Select Reconcile or Race two retries to try again.";
+        return "The merchant keeps the payment pending. The provider has " + count + " for this ID.";
       }
-      if (state.merchant_status === "paid" && state.provider_count === 1) {
-        return "The merchant confirmed the payment. The provider kept one charge for this ID.";
-      }
-      return "";
+      return "The merchant shows the payment as paid. The provider has " + count + " for this ID.";
     }
 
     async function run(action = "") {
@@ -315,9 +373,10 @@
       browserEdge.dataset.direction = action ? "forward" : "";
       highlight("browser", "");
       feedback.dataset.error = "false";
-      feedback.textContent = action ? "Sending " + action + " to the Go merchant…" : "Reading both ledgers…";
+      setStep(...startSteps[action]);
       render();
 
+      let receivedState = false;
       try {
         const options = { method: action ? "POST" : "GET", headers: {} };
         if (action) options.headers.Accept = streamType;
@@ -329,7 +388,7 @@
         const response = await fetch(path, options);
         const type = response.headers.get("Content-Type") || "";
         if (type.includes(streamType)) {
-          state = await readStream(response);
+          state = await readStream(response, action);
         } else if (type.includes("application/json")) {
           state = await response.json();
           for (const message of state.events) appendTrace(message);
@@ -338,12 +397,14 @@
           throw new Error(message || "The Go backend is unavailable.");
         }
 
+        receivedState = true;
         if (!response.ok || state.error) throw new Error(state.error || "The action failed.");
         browserState.value = action ? "Received" : "Ready";
         browserEdge.dataset.direction = action ? "back" : "";
         highlight(action ? "browser" : "");
         feedback.textContent = explainResult();
       } catch (error) {
+        if (!receivedState) state = null;
         browserState.value = "Error";
         browserEdge.dataset.direction = "fault";
         feedback.dataset.error = "true";
@@ -357,6 +418,7 @@
     scenario.addEventListener("change", () => {
       sessionStorage.setItem(scenarioKey, scenario.value);
       scenarioHelp.textContent = scenarioDescriptions[scenario.value];
+      renderGuide();
     });
     pay.addEventListener("click", () => run("pay"));
     reconcile.addEventListener("click", () => run("reconcile"));
