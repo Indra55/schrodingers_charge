@@ -53,3 +53,11 @@ func (s store) lookup(id string) (localPayment, error) {
 func printStatus(charge payment.Charge, status string) {
 	fmt.Printf("%s %s (%d paise)\n", charge.PaymentID, status, charge.AmountPaise)
 }
+
+func (s store) markPaid(id string) error {
+	_, err := s.db.Exec("UPDATE payments SET status = 'paid' WHERE payment_id = ?", id)
+	if err != nil {
+		return fmt.Errorf("save paid status for %s: %w", id, err)
+	}
+	return nil
+}
