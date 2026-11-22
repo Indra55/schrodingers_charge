@@ -151,6 +151,7 @@ type traceEvent struct {
 	Phase   string `json:"phase"`
 	Label   string `json:"label"`
 	Message string `json:"message"`
+	Worker  string `json:"worker,omitempty"`
 }
 
 func (m merchant) record(phase, label, message string) {

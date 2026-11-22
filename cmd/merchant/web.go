@@ -238,10 +238,14 @@ func (m merchant) providerCount(ctx context.Context, id string) (int, error) {
 
 func (m merchant) race(charge payment.Charge) error {
 	workers := make([]merchant, 0, 2)
-	for _, name := range []string{"Worker A", "Worker B"} {
+	for _, workerID := range []string{"A", "B"} {
 		worker := m
 		worker.trace = func(event traceEvent) {
-			m.record(event.Phase, event.Label, name+" · "+event.Message)
+			if m.trace != nil {
+				event.Worker = workerID
+				event.Message = "Worker " + workerID + " · " + event.Message
+				m.trace(event)
+			}
 		}
 		found, err := worker.lookup(charge)
 		if err != nil {

@@ -76,9 +76,29 @@
     .trace-head { display: flex; flex-wrap: wrap; gap: 8px 16px; justify-content: space-between; align-items: baseline; }
     .payment-id { color: var(--muted); font-size: .73rem; overflow-wrap: anywhere; }
     .payment-id code { color: #ddd; font: inherit; }
-    .trace ol { margin: 14px 0 0; padding-left: 28px; }
-    .trace li { padding: 4px 0 4px 4px; line-height: 1.55; font-size: .84rem; overflow-wrap: anywhere; }
-    .trace li::marker { color: var(--muted); }
+    .trace ol { margin: 14px 0 0; padding: 0; list-style: none; }
+    .trace-row { display: grid; grid-template-columns: 52px minmax(0, 1fr); min-height: 28px; }
+    .trace-copy { align-self: center; padding: 4px 0 4px 4px; line-height: 1.55; font-size: .84rem; overflow-wrap: anywhere; }
+    .trace-row[data-phase="action"] .trace-copy { padding-block: 8px; font-weight: 600; }
+    .trace-track { position: relative; }
+    .trace-track svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+    .trace-track path { fill: none; stroke-width: 1px; vector-effect: non-scaling-stroke; }
+    .trace-trunk { stroke: #624380; }
+    .trace-branch { stroke: #a470d3; }
+    .trace-point {
+      position: absolute;
+      top: 50%;
+      left: var(--lane);
+      width: 7px;
+      height: 7px;
+      border: 1px solid #bb92ed;
+      border-radius: 50%;
+      background: #000;
+      transform: translate(-50%, -50%);
+    }
+    .trace-row[data-phase="action"] .trace-point { width: 9px; height: 9px; background: #bb92ed; }
+    .trace-row[data-outcome="confirmed"] .trace-point { border-color: #8abd9f; background: #365a46; }
+    .trace-row[data-outcome="failed"] .trace-point { border-color: #d995a0; background: #653e48; }
     .empty { margin-top: 12px; color: var(--muted); font-size: .84rem; }
     @media (max-width: 560px) {
       main { width: min(100% - 28px, 920px); }
@@ -87,6 +107,7 @@
       .actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: stretch; }
       button, select { min-height: 44px; }
       .nodes, .guide-content { grid-template-columns: 1fr; }
+      .trace-row { grid-template-columns: 44px minmax(0, 1fr); }
       .node { grid-template-columns: minmax(0, 1fr) auto; align-items: center; min-height: 54px; gap: 8px; padding: 10px 12px; }
       .node h3 { align-self: center; }
       .node output { text-align: right; }
@@ -118,7 +139,7 @@
         <button id="race">Race two retries</button>
         <button id="reset">Reset</button>
       </div>
-      <p class="scenario-help" id="scenario-help">The provider saves the charge, then delays its reply until the merchant times out.</p>
+      <p class="scenario-help" id="scenario-help">The provider saves the ₹499 charge and delays its reply by 2 seconds. The merchant times out after 500 ms and stays pending.</p>
     </div>
 
     <section class="flow" aria-labelledby="flow-title">
@@ -156,6 +177,7 @@
           <summary>Diagram and trace reference</summary>
           <p>Arrows show requests and replies. A dashed arrow marks a failed request. The merchant and provider each store their own state in SQLite.</p>
           <p>GET checks for a charge. POST sends a charge request. 201 means a new charge. 200 returns an existing charge. 404 means missing. 503 means unavailable.</p>
+          <p>Purple branches group the steps. Green dots mark a confirmation. Rose dots mark a failure.</p>
           <p>The payment ID is the idempotency key. The provider’s SQLite database allows one charge per ID, even when two workers retry.</p>
         </details>
       </section>
@@ -163,11 +185,11 @@
 
     <section class="trace" aria-labelledby="trace-title">
       <div class="trace-head">
-        <h2 id="trace-title">Request trace</h2>
+        <h2 id="trace-title">Request tree</h2>
         <p class="payment-id">Payment ID <code id="payment-id">Loading…</code></p>
       </div>
       <p class="empty" id="empty">Requests and SQLite updates appear here.</p>
-      <ol id="events" aria-live="polite"></ol>
+      <ol id="events" role="list" aria-live="polite"></ol>
     </section>
   </main>
   <script>
@@ -176,8 +198,8 @@
     const scenarioHelp = get("scenario-help");
     const scenarioDescriptions = {
       timeout: scenarioHelp.textContent,
-      offline: "The provider returns HTTP 503 before it saves a charge.",
-      normal: "The provider saves the charge and confirms it before the merchant times out."
+      offline: "The provider returns HTTP 503 before saving the charge. The merchant stays pending and the provider has zero charges.",
+      normal: "The provider saves one ₹499 charge and replies before the timeout. The merchant marks the payment paid."
     };
     const pay = get("pay");
     const reconcile = get("reconcile");
@@ -211,10 +233,13 @@
     const storageKey = "schrodinger-charge-payment-id";
     const scenarioKey = "schrodinger-charge-scenario";
     const streamType = "application/x-ndjson";
+    const svgNS = "http://www.w3.org/2000/svg";
+    const actionNames = { pay: "Pay ₹499", reconcile: "Reconcile", race: "Race two retries" };
 
     let id = sessionStorage.getItem(storageKey) || newPaymentID();
     let state = null;
     let busy = false;
+    let traceRows = [];
 
     const savedScenario = sessionStorage.getItem(scenarioKey);
     if (Object.hasOwn(scenarioDescriptions, savedScenario)) scenario.value = savedScenario;
@@ -288,15 +313,77 @@
       guideWait.textContent = next;
     }
 
-    function appendTrace(message) {
+    function traceOutcome(event) {
+      if (event.phase === "fault") return "failed";
+      if (event.phase === "merchant" && event.label === "Paid") return "confirmed";
+      if (event.phase !== "response") return "";
+      if (event.label === "HTTP 200" || event.label === "HTTP 201") return "confirmed";
+      return event.label === "HTTP 404" ? "" : "failed";
+    }
+
+    function appendTrace(event) {
       const item = document.createElement("li");
-      item.textContent = message;
+      item.className = "trace-row";
+      item.dataset.phase = event.phase;
+      item.dataset.outcome = traceOutcome(event);
+
+      const track = document.createElement("span");
+      track.className = "trace-track";
+      track.setAttribute("aria-hidden", "true");
+
+      const svg = document.createElementNS(svgNS, "svg");
+      svg.setAttribute("viewBox", "0 0 48 100");
+      svg.setAttribute("preserveAspectRatio", "none");
+      const trunk = document.createElementNS(svgNS, "path");
+      trunk.setAttribute("class", "trace-trunk");
+      trunk.setAttribute("d", "M8 0 V100");
+      const branch = document.createElementNS(svgNS, "path");
+      branch.setAttribute("class", "trace-branch");
+      svg.append(trunk, branch);
+
+      const point = document.createElement("span");
+      point.className = "trace-point";
+      track.append(svg, point);
+
+      const copy = document.createElement("span");
+      copy.className = "trace-copy";
+      copy.textContent = event.message;
+      item.append(track, copy);
       events.append(item);
+
+      traceRows.push({ branch, point, worker: event.worker, lane: event.worker === "B" ? 38 : 23 });
+      drawTrace();
       empty.hidden = true;
     }
 
+    function drawTrace(closed = false) {
+      const last = traceRows.length - 1;
+      const lanes = new Set(traceRows.slice(1).map(row => row.lane));
+      const hasWorkers = traceRows.some(row => row.worker);
+      traceRows.forEach((row, index) => {
+        const end = closed && index === last;
+        const merge = end && hasWorkers && !row.worker;
+        const marker = index === 0 || merge ? 8 : row.lane;
+        row.point.style.setProperty("--lane", marker / 48 * 100 + "%");
+
+        let path = "";
+        for (const lane of lanes) {
+          if (index === 0) {
+            path += `M8 50 C8 75 ${lane} 65 ${lane} 100 `;
+          } else if (merge) {
+            path += `M${lane} 0 C${lane} 32 8 22 8 50 `;
+          } else if (end) {
+            path += `M${lane} 0 V50 C${lane} 82 8 74 8 100 `;
+          } else {
+            path += `M${lane} 0 V100 `;
+          }
+        }
+        row.branch.setAttribute("d", path);
+      });
+    }
+
     function showEvent(event, action) {
-      appendTrace(event.message);
+      appendTrace(event);
       switch (event.phase) {
         case "merchant":
           merchantState.value = event.label;
@@ -368,6 +455,8 @@
     }
 
     async function run(action = "") {
+      traceRows = [];
+      if (action) appendTrace({ phase: "action", message: actionNames[action] });
       busy = true;
       browserState.value = "Waiting";
       browserEdge.dataset.direction = action ? "forward" : "";
@@ -391,7 +480,7 @@
           state = await readStream(response, action);
         } else if (type.includes("application/json")) {
           state = await response.json();
-          for (const message of state.events) appendTrace(message);
+          for (const message of state.events) appendTrace({ phase: "note", message });
         } else {
           const message = type.includes("text/plain") ? (await response.text()).trim() : "";
           throw new Error(message || "The Go backend is unavailable.");
@@ -409,7 +498,9 @@
         browserEdge.dataset.direction = "fault";
         feedback.dataset.error = "true";
         feedback.textContent = error.message;
+        if (action) appendTrace({ phase: "fault", message: error.message });
       } finally {
+        drawTrace(true);
         busy = false;
         render();
       }
