@@ -29,6 +29,7 @@
     .controls, .actions { display: flex; flex-wrap: wrap; align-items: end; gap: 8px; }
     .controls { gap: 12px 20px; padding-block: 18px; border-block: 1px solid var(--line); }
     label { display: grid; gap: 6px; color: var(--muted); font-size: .8rem; }
+    .scenario-help { flex-basis: 100%; color: var(--muted); font-size: .83rem; line-height: 1.55; }
     button, select {
       min-height: 42px;
       padding: 8px 12px;
@@ -60,6 +61,15 @@
     .edge[data-direction="fault"]::after { display: none; }
     .flow-status { min-height: 1.5em; margin-top: 14px; color: var(--muted); font-size: .85rem; line-height: 1.5; }
     .flow-status[data-error="true"] { color: #fff; }
+    .guide { margin-top: 12px; }
+    .guide summary { width: fit-content; cursor: pointer; font-size: .85rem; }
+    .guide-content { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px 28px; margin-top: 14px; }
+    .guide p + p { margin-top: 5px; }
+    .guide h3 { margin-bottom: 5px; font-size: .8rem; font-weight: 600; }
+    .guide p, .guide dl { color: var(--muted); font-size: .83rem; line-height: 1.55; }
+    .guide dl { display: grid; gap: 5px; margin: 0; }
+    .guide dt { display: inline; color: #fff; }
+    .guide dd { display: inline; margin: 0; }
     .trace { padding-top: 22px; }
     .trace-head { display: flex; flex-wrap: wrap; gap: 8px 16px; justify-content: space-between; align-items: baseline; }
     .payment-id { color: var(--muted); font-size: .73rem; overflow-wrap: anywhere; }
@@ -72,9 +82,9 @@
       main { width: min(100% - 28px, 920px); }
       header { margin-bottom: 24px; }
       .controls label, select, .actions { width: 100%; }
-      .actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: stretch; }
       button, select { min-height: 44px; }
-      .nodes { grid-template-columns: 1fr; }
+      .nodes, .guide-content { grid-template-columns: 1fr; }
       .node { grid-template-columns: minmax(0, 1fr) auto; align-items: center; min-height: 54px; gap: 8px; padding: 10px 12px; }
       .node h3 { align-self: center; }
       .node output { text-align: right; }
@@ -94,7 +104,7 @@
 
     <div class="controls">
       <label for="scenario">Scenario
-        <select id="scenario">
+        <select id="scenario" aria-describedby="scenario-help">
           <option value="timeout">Response times out after commit</option>
           <option value="offline">Request fails before commit</option>
           <option value="normal">Provider confirms the charge</option>
@@ -106,6 +116,7 @@
         <button id="race">Race two retries</button>
         <button id="reset">Reset</button>
       </div>
+      <p class="scenario-help" id="scenario-help">The provider saves the charge, then delays its reply until the merchant times out.</p>
     </div>
 
     <section class="flow" aria-labelledby="flow-title">
@@ -127,6 +138,33 @@
         </div>
       </div>
       <p class="flow-status" id="feedback" role="status"></p>
+      <details class="guide">
+        <summary>How it works</summary>
+        <div class="guide-content">
+          <div>
+            <h3>Read the diagram</h3>
+            <p>The browser starts an action. The merchant keeps the payment pending until it confirms the charge. The provider counts charges for the payment ID. Both Go services use SQLite.</p>
+            <p>Arrows show requests and replies. A dashed line marks a failed request.</p>
+          </div>
+          <div>
+            <h3>Try an action</h3>
+            <dl>
+              <div><dt>Pay ₹499.</dt> <dd>Save a pending test payment and send it to the provider.</dd></div>
+              <div><dt>Reconcile.</dt> <dd>Check the provider first. Retry only if the charge is missing.</dd></div>
+              <div><dt>Race two retries.</dt> <dd>Send two retries for the same missing charge.</dd></div>
+              <div><dt>Reset.</dt> <dd>Start with a fresh payment ID.</dd></div>
+            </dl>
+          </div>
+          <div>
+            <h3>Why retries keep one charge</h3>
+            <p>Every retry reuses the payment ID. SQLite permits one charge per ID. The provider returns the existing charge on a retry.</p>
+          </div>
+          <div>
+            <h3>Read the trace</h3>
+            <p>GET checks for a charge. POST sends a charge request. HTTP 201 means a new charge. 200 returns an existing charge. 404 means missing. 503 means unavailable.</p>
+          </div>
+        </div>
+      </details>
     </section>
 
     <section class="trace" aria-labelledby="trace-title">
@@ -141,6 +179,12 @@
   <script>
     const get = id => document.getElementById(id);
     const scenario = get("scenario");
+    const scenarioHelp = get("scenario-help");
+    const scenarioDescriptions = {
+      timeout: scenarioHelp.textContent,
+      offline: "The provider returns HTTP 503 before it saves a charge.",
+      normal: "The provider saves the charge and confirms it before the merchant times out."
+    };
     const pay = get("pay");
     const reconcile = get("reconcile");
     const race = get("race");
@@ -158,11 +202,16 @@
     const empty = get("empty");
     const feedback = get("feedback");
     const storageKey = "schrodinger-charge-payment-id";
+    const scenarioKey = "schrodinger-charge-scenario";
     const streamType = "application/x-ndjson";
 
     let id = sessionStorage.getItem(storageKey) || newPaymentID();
     let state = null;
     let busy = false;
+
+    const savedScenario = sessionStorage.getItem(scenarioKey);
+    if (Object.hasOwn(scenarioDescriptions, savedScenario)) scenario.value = savedScenario;
+    scenarioHelp.textContent = scenarioDescriptions[scenario.value];
 
     function newPaymentID() {
       const value = crypto.randomUUID();
@@ -248,6 +297,18 @@
       return result;
     }
 
+    function explainResult() {
+      if (state.merchant_status === "pending") {
+        return state.provider_count === 1
+          ? "The provider has one charge. Select Reconcile to confirm the payment."
+          : "The provider has zero charges. Select Reconcile or Race two retries to try again.";
+      }
+      if (state.merchant_status === "paid" && state.provider_count === 1) {
+        return "The merchant confirmed the payment. The provider kept one charge for this ID.";
+      }
+      return "";
+    }
+
     async function run(action = "") {
       busy = true;
       browserState.value = "Waiting";
@@ -281,7 +342,7 @@
         browserState.value = action ? "Received" : "Ready";
         browserEdge.dataset.direction = action ? "back" : "";
         highlight(action ? "browser" : "");
-        feedback.textContent = action ? "Read the payment state and charge count from SQLite." : "";
+        feedback.textContent = explainResult();
       } catch (error) {
         browserState.value = "Error";
         browserEdge.dataset.direction = "fault";
@@ -293,6 +354,10 @@
       }
     }
 
+    scenario.addEventListener("change", () => {
+      sessionStorage.setItem(scenarioKey, scenario.value);
+      scenarioHelp.textContent = scenarioDescriptions[scenario.value];
+    });
     pay.addEventListener("click", () => run("pay"));
     reconcile.addEventListener("click", () => run("reconcile"));
     race.addEventListener("click", () => run("race"));
