@@ -21,7 +21,7 @@
     main { max-width: 860px; margin: 0 auto; padding: clamp(24px, 6vw, 76px) 24px; }
     h1 { margin: 0; font-size: clamp(2.25rem, 6vw, 4.25rem); line-height: 1; letter-spacing: -.055em; }
     p { color: var(--muted); line-height: 1.55; }
-    code, output, li { font-family: var(--mono); }
+    code, output, li { font-family: var(--mono); overflow-wrap: anywhere; }
     .controls, .actions { display: flex; flex-wrap: wrap; align-items: end; gap: 8px; }
     .controls { margin-top: 32px; gap: 12px; }
     label { display: grid; gap: 6px; font-size: .85rem; color: var(--muted); }
@@ -51,14 +51,16 @@
     .trace ol { margin: 12px 0 0; padding-left: 26px; }
     .trace li { padding: 4px 0 4px 4px; font-size: .85rem; line-height: 1.5; }
     .trace li::marker { color: var(--muted); }
-    .empty { margin: 10px 0 0; font-size: .9rem; }
+    .empty, .feedback { margin: 10px 0 0; font-size: .9rem; }
+    .feedback[data-error="true"] { color: #ffd190; }
     @media (max-width: 520px) { main { padding-inline: 16px; } label, select { width: 100%; } }
   </style>
 </head>
 <body>
   <main>
     <h1>Schrödinger’s Charge</h1>
-    <p>Simulate a ₹499 payment with ID <code>demo-1</code>. Follow the merchant and provider records as the payment recovers.</p>
+    <p>Send a ₹499 test payment through the Go merchant and mock provider. Follow the SQLite records as the payment recovers.</p>
+    <p>Payment ID <code id="payment-id">Loading…</code></p>
 
     <div class="controls">
       <label for="scenario">Scenario
@@ -79,19 +81,20 @@
     <div class="records">
       <section class="record">
         <h2>Merchant payment</h2>
-        <output id="merchant-state">No payment</output>
+        <output id="merchant-state">Loading…</output>
       </section>
       <section class="record">
         <h2>Provider ledger</h2>
-        <output id="provider-state">0 charges</output>
+        <output id="provider-state">Loading…</output>
       </section>
     </div>
 
     <section class="trace" aria-labelledby="trace-title">
       <h2 id="trace-title">Request trace</h2>
-      <p class="empty" id="empty">Choose a scenario and send the payment.</p>
+      <p class="empty" id="empty">Run an action to see the Go request trace.</p>
       <ol id="events" aria-live="polite"></ol>
     </section>
+    <p class="feedback" id="feedback" role="status"></p>
   </main>
   <script>
     const scenario = document.querySelector("#scenario");
@@ -101,97 +104,86 @@
     const reset = document.querySelector("#reset");
     const merchantState = document.querySelector("#merchant-state");
     const providerState = document.querySelector("#provider-state");
+    const paymentID = document.querySelector("#payment-id");
     const events = document.querySelector("#events");
     const empty = document.querySelector("#empty");
+    const feedback = document.querySelector("#feedback");
+    const storageKey = "schrodinger-charge-payment-id";
 
-    let merchant = "";
-    let committed = false;
+    let id = sessionStorage.getItem(storageKey) || newPaymentID();
+    let state = null;
+    let busy = false;
 
-    function log(message) {
-      const item = document.createElement("li");
-      item.textContent = message;
-      events.append(item);
+    function newPaymentID() {
+      const value = crypto.randomUUID();
+      sessionStorage.setItem(storageKey, value);
+      return value;
     }
 
     function render() {
-      merchantState.value = merchant || "No payment";
-      merchantState.dataset.state = merchant;
-      providerState.value = committed ? "1 charge" : "0 charges";
-      providerState.dataset.state = committed ? "paid" : "";
-      scenario.disabled = Boolean(merchant);
-      pay.disabled = Boolean(merchant);
-      reconcile.disabled = !merchant;
-      race.disabled = merchant !== "pending" || committed;
-      reset.disabled = !merchant;
+      paymentID.textContent = id;
+      const status = state?.merchant_status;
+      const count = state?.provider_count;
+      merchantState.value = status === "none" ? "No payment" : status || "—";
+      merchantState.dataset.state = status || "";
+      providerState.value = count === undefined ? "—" : count + (count === 1 ? " charge" : " charges");
+      providerState.dataset.state = count ? "paid" : "";
+      scenario.disabled = busy || status !== "none";
+      pay.disabled = busy || status !== "none";
+      reconcile.disabled = busy || !status || status === "none";
+      race.disabled = busy || status !== "pending" || count !== 0;
+      reset.disabled = busy;
       empty.hidden = events.childElementCount > 0;
     }
 
-    function post(worker) {
-      log(worker + " → POST /charges · demo-1 · 49900 paise");
-      if (committed) {
-        log("Provider → 200 · existing demo-1");
-        return;
+    async function run(action = "") {
+      busy = true;
+      feedback.dataset.error = "false";
+      feedback.textContent = "Waiting for the Go backend…";
+      render();
+
+      try {
+        const options = { method: action ? "POST" : "GET" };
+        if (action === "pay") {
+          options.headers = { "Content-Type": "application/json" };
+          options.body = JSON.stringify({ scenario: scenario.value });
+        }
+        const path = "/api/demo/" + id + (action ? "/" + action : "");
+        const response = await fetch(path, options);
+        if (!response.headers.get("Content-Type")?.includes("application/json")) {
+          throw new Error((await response.text()).trim() || "The Go backend is unavailable.");
+        }
+
+        state = await response.json();
+        for (const message of state.events) {
+          const item = document.createElement("li");
+          item.textContent = message;
+          events.append(item);
+        }
+        if (!response.ok) {
+          throw new Error(state.error || "The action failed.");
+        }
+        feedback.textContent = "";
+      } catch (error) {
+        feedback.dataset.error = "true";
+        feedback.textContent = error.message;
+      } finally {
+        busy = false;
+        render();
       }
-      committed = true;
-      log("Provider commits demo-1 · 1 charge");
     }
 
-    function markPaid() {
-      merchant = "paid";
-      log("Merchant saves paid.");
-    }
-
-    pay.addEventListener("click", () => {
-      merchant = "pending";
-      log("Merchant saves demo-1 as pending.");
-      if (scenario.value === "offline") {
-        log("POST /charges fails before the provider receives it.");
-      } else {
-        post("Merchant");
-        if (scenario.value === "timeout") {
-          log("Merchant times out. The local payment stays pending.");
-        } else {
-          log("Provider → 201 · new demo-1");
-          markPaid();
-        }
-      }
-      render();
-    });
-
-    reconcile.addEventListener("click", () => {
-      if (merchant === "paid") {
-        log("No pending payments. The merchant sends zero requests.");
-      } else {
-        log("Fresh merchant process → GET /charges/demo-1");
-        if (committed) {
-          log("Provider → 200 · existing demo-1");
-        } else {
-          log("Provider → 404 · charge missing");
-          post("Merchant retry");
-          log("Provider → 201 · new demo-1");
-        }
-        markPaid();
-      }
-      render();
-    });
-
-    race.addEventListener("click", () => {
-      log("Workers A and B both look up demo-1 and receive 404.");
-      post("Worker A");
-      log("Provider → 201 · new demo-1");
-      post("Worker B");
-      markPaid();
-      render();
-    });
-
+    pay.addEventListener("click", () => run("pay"));
+    reconcile.addEventListener("click", () => run("reconcile"));
+    race.addEventListener("click", () => run("race"));
     reset.addEventListener("click", () => {
-      merchant = "";
-      committed = false;
+      id = newPaymentID();
+      state = null;
       events.replaceChildren();
-      render();
+      run();
     });
 
-    render();
+    run();
   </script>
 </body>
 </html>

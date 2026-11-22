@@ -74,8 +74,24 @@ If two workers both see HTTP 404, both can send the same charge. The provider in
 
 Use `./bin/provider -help` and `./bin/merchant -help` to see the flags. Put merchant flags before the command.
 
-## Browser simulation
+## Run the browser demo
 
-Open `docs/index.html` in a browser. Deploy the `docs` directory to a static host to share the simulation.
+Run these commands from the repository root.
 
-Choose **Request fails before commit**, then click **Pay ₹499** and **Race two retries**. The trace shows two HTTP 404 responses, two POST requests, and one provider charge.
+```sh
+mkdir -p bin
+go build -o bin/ ./cmd/provider ./cmd/merchant
+bash ./scripts/demo.sh
+```
+
+Open `http://localhost:10000`. The Go merchant serves the page and runs each action against a separate Go provider over localhost HTTP. The page shows current state from both SQLite databases.
+
+- Choose **Response times out after commit**, then click **Pay ₹499**. The merchant stays pending while the provider has one charge. **Reconcile** reads the existing charge and marks the payment paid.
+- Choose **Request fails before commit** and click **Pay ₹499**. The provider has zero charges. Click **Race two retries** to see both requests use the same payment ID. SQLite accepts one insert.
+- Click **Reset** to start with a new payment ID.
+
+## Deploy on Render
+
+In the Render dashboard, choose **New → Blueprint** and connect this repository. Select the branch that contains `render.yaml` and deploy. Open the `onrender.com` URL for the `schrodingers-charge` Web Service.
+
+The Blueprint builds both Go programs and starts them on one free Web Service. The browser reaches the merchant on Render’s `PORT`. The merchant talks to the provider on localhost. The free instance clears both SQLite files on restart, redeploy, or spin-down.

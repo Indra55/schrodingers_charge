@@ -17,6 +17,8 @@ type merchant struct {
 	store    store
 	client   *http.Client
 	provider string
+	fault    string
+	trace    func(string)
 }
 
 func main() {
@@ -30,9 +32,10 @@ func run(args []string) error {
 	flags := flag.NewFlagSet("merchant", flag.ContinueOnError)
 	dbPath := flags.String("db", "merchant.db", "merchant SQLite database")
 	provider := flags.String("provider", "http://127.0.0.1:8080", "provider base URL")
+	addr := flags.String("addr", "127.0.0.1:3000", "browser demo listen address")
 	timeout := flags.Duration("timeout", 500*time.Millisecond, "HTTP timeout per request")
 	flags.Usage = func() {
-		fmt.Fprintln(flags.Output(), "Usage: merchant [flags] pay <id> <paise> | status <id> | reconcile")
+		fmt.Fprintln(flags.Output(), "Usage: merchant [flags] pay <id> <paise> | status <id> | reconcile | serve")
 		flags.PrintDefaults()
 	}
 	if err := flags.Parse(args); err != nil {
@@ -62,9 +65,9 @@ func run(args []string) error {
 		if len(args) != 2 {
 			return fmt.Errorf("usage: merchant [flags] status <id>")
 		}
-	case "reconcile":
+	case "reconcile", "serve":
 		if len(args) != 1 {
-			return fmt.Errorf("usage: merchant [flags] reconcile")
+			return fmt.Errorf("usage: merchant [flags] %s", args[0])
 		}
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
@@ -89,6 +92,8 @@ func run(args []string) error {
 		return m.pay(requested)
 	case "status":
 		return m.status(args[1])
+	case "serve":
+		return m.serve(*addr)
 	default:
 		return m.reconcile()
 	}
@@ -106,10 +111,15 @@ func (m merchant) pay(charge payment.Charge) error {
 		return fmt.Errorf("payment %s already has amount %d paise", charge.PaymentID, local.AmountPaise)
 	}
 	if local.status == "paid" {
-		printStatus(local.Charge, local.status)
+		if m.trace != nil {
+			m.record("Merchant already marked the payment paid.")
+		} else {
+			printStatus(local.Charge, local.status)
+		}
 		return nil
 	}
 
+	m.record("Merchant saved pending.")
 	if err := m.send(charge); err != nil {
 		return fmt.Errorf("%s pending (%d paise): %w", charge.PaymentID, charge.AmountPaise, err)
 	}
@@ -129,6 +139,16 @@ func (m merchant) markPaid(charge payment.Charge) error {
 	if err := m.store.markPaid(charge.PaymentID); err != nil {
 		return err
 	}
-	printStatus(charge, "paid")
+	if m.trace != nil {
+		m.record("Merchant saved paid.")
+	} else {
+		printStatus(charge, "paid")
+	}
 	return nil
+}
+
+func (m merchant) record(message string) {
+	if m.trace != nil {
+		m.trace(message)
+	}
 }

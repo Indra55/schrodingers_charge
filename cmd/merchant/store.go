@@ -16,6 +16,8 @@ CREATE TABLE IF NOT EXISTS payments (
 );
 `
 
+var errNotFound = errors.New("not found")
+
 type localPayment struct {
 	payment.Charge
 	status string
@@ -42,7 +44,7 @@ func (s store) lookup(id string) (localPayment, error) {
 	err := s.db.QueryRow("SELECT amount_paise, status FROM payments WHERE payment_id = ?", id).
 		Scan(&local.AmountPaise, &local.status)
 	if errors.Is(err, sql.ErrNoRows) {
-		return local, fmt.Errorf("payment %q not found", id)
+		return local, fmt.Errorf("payment %q %w", id, errNotFound)
 	}
 	if err != nil {
 		return local, fmt.Errorf("read payment %q: %w", id, err)

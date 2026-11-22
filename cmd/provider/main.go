@@ -16,12 +16,14 @@ import (
 type provider struct {
 	ledger        ledger
 	responseDelay time.Duration
+	demoFaults    bool
 }
 
 func main() {
 	addr := flag.String("addr", "127.0.0.1:8080", "HTTP listen address")
 	dbPath := flag.String("db", "provider.db", "provider SQLite database")
 	delay := flag.Duration("response-delay", 0, "delay before responding to a newly committed charge")
+	demoFaults := flag.Bool("demo-faults", false, "enable browser demo faults and ledger inspection")
 	flag.Parse()
 
 	if *delay < 0 || flag.NArg() != 0 {
@@ -34,7 +36,7 @@ func main() {
 		log.Fatalf("open provider database: %v", err)
 	}
 
-	p := provider{ledger: ledger{db: db}, responseDelay: *delay}
+	p := provider{ledger: ledger{db: db}, responseDelay: *delay, demoFaults: *demoFaults}
 	server := http.Server{
 		Addr:              *addr,
 		Handler:           p.handler(),
@@ -48,6 +50,16 @@ func (p provider) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /charges", p.createCharge)
 	mux.HandleFunc("GET /charges/{id}", p.getCharge)
+	if p.demoFaults {
+		mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
+			if err := p.ledger.db.PingContext(r.Context()); err != nil {
+				writeDBError(w, err)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+		})
+		mux.HandleFunc("GET /demo/charges/{id}/count", p.chargeCount)
+	}
 	return mux
 }
 
@@ -64,14 +76,25 @@ func (p provider) createCharge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	delay := p.responseDelay
+	if p.demoFaults {
+		switch r.Header.Get("X-Demo-Fault") {
+		case "before-commit":
+			http.Error(w, "provider unavailable before commit", http.StatusServiceUnavailable)
+			return
+		case "after-commit":
+			delay = 2 * time.Second
+		}
+	}
+
 	inserted, err := p.ledger.record(r.Context(), requested.PaymentID, requested.AmountPaise)
 	if err != nil {
 		writeDBError(w, err)
 		return
 	}
 	if inserted {
-		if p.responseDelay > 0 {
-			timer := time.NewTimer(p.responseDelay)
+		if delay > 0 {
+			timer := time.NewTimer(delay)
 			defer timer.Stop()
 			select {
 			case <-timer.C:
@@ -106,6 +129,19 @@ func (p provider) getCharge(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeCharge(w, http.StatusOK, payment.Charge{PaymentID: id, AmountPaise: amount})
 	}
+}
+
+func (p provider) chargeCount(w http.ResponseWriter, r *http.Request) {
+	var count int
+	err := p.ledger.db.QueryRowContext(r.Context(),
+		"SELECT COUNT(*) FROM charges WHERE payment_id = ?", r.PathValue("id"),
+	).Scan(&count)
+	if err != nil {
+		writeDBError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(count)
 }
 
 func writeDBError(w http.ResponseWriter, err error) {

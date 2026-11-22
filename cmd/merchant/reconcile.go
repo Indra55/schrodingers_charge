@@ -3,6 +3,8 @@ package main
 import (
 	"errors"
 	"fmt"
+
+	"github.com/Indra55/schrodingers_charge/internal/payment"
 )
 
 func (m merchant) reconcile() error {
@@ -17,18 +19,20 @@ func (m merchant) reconcile() error {
 
 	var failures []error
 	for _, charge := range pending {
-		found, err := m.lookup(charge)
-		if err == nil && !found {
-			err = m.send(charge)
-		}
-		if err != nil {
-			failures = append(failures, fmt.Errorf("%s pending (%d paise): %w",
-				charge.PaymentID, charge.AmountPaise, err))
-			continue
-		}
-		if err := m.markPaid(charge); err != nil {
+		if err := m.reconcileCharge(charge); err != nil {
 			failures = append(failures, err)
 		}
 	}
 	return errors.Join(failures...)
+}
+
+func (m merchant) reconcileCharge(charge payment.Charge) error {
+	found, err := m.lookup(charge)
+	if err == nil && !found {
+		err = m.send(charge)
+	}
+	if err != nil {
+		return fmt.Errorf("%s pending (%d paise): %w", charge.PaymentID, charge.AmountPaise, err)
+	}
+	return m.markPaid(charge)
 }
