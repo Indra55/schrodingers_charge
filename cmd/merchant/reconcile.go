@@ -18,13 +18,12 @@ func (m merchant) reconcile() error {
 	var failures []error
 	for _, charge := range pending {
 		found, err := m.lookup(charge)
+		if err == nil && !found {
+			err = m.send(charge)
+		}
 		if err != nil {
 			failures = append(failures, fmt.Errorf("%s pending (%d paise): %w",
 				charge.PaymentID, charge.AmountPaise, err))
-			continue
-		}
-		if !found {
-			fmt.Printf("%s pending (%d paise)\n", charge.PaymentID, charge.AmountPaise)
 			continue
 		}
 		if err := m.markPaid(charge); err != nil {
