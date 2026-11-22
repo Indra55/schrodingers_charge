@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Simulate a payment timeout, reconciliation, and concurrent retries.">
+  <title>Schrödinger’s Charge</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      font-family: system-ui, sans-serif;
+      background: #101412;
+      color: #edf1e9;
+      --border: #36423b;
+      --muted: #a5b4aa;
+      --accent: #d3f588;
+      --mono: ui-monospace, SFMono-Regular, Consolas, monospace;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; }
+    main { max-width: 860px; margin: 0 auto; padding: clamp(24px, 6vw, 76px) 24px; }
+    h1 { margin: 0; font-size: clamp(2.25rem, 6vw, 4.25rem); line-height: 1; letter-spacing: -.055em; }
+    p { color: var(--muted); line-height: 1.55; }
+    code, output, li { font-family: var(--mono); }
+    .controls, .actions { display: flex; flex-wrap: wrap; align-items: end; gap: 8px; }
+    .controls { margin-top: 32px; gap: 12px; }
+    label { display: grid; gap: 6px; font-size: .85rem; color: var(--muted); }
+    button, select {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: #1e2922;
+      color: inherit;
+      min-height: 42px;
+      padding: 9px 12px;
+      font: inherit;
+      font-size: .9rem;
+    }
+    button { cursor: pointer; }
+    button:enabled:hover { background: #2e3b32; }
+    button.primary:enabled { background: var(--accent); color: #19250c; border-color: var(--accent); font-weight: 700; }
+    button:disabled { opacity: .45; cursor: default; }
+    :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+    .records { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 20px 0 26px; }
+    .record, .trace { border: 1px solid var(--border); border-radius: 12px; background: #18201b; }
+    .record { padding: 16px; }
+    h2 { font-size: .9rem; font-weight: 650; margin: 0; }
+    output { display: block; margin-top: 10px; font-size: clamp(1.1rem, 4vw, 1.6rem); }
+    output[data-state="pending"] { color: #ffd190; }
+    output[data-state="paid"] { color: var(--accent); }
+    .trace { padding: 16px; }
+    .trace ol { margin: 12px 0 0; padding-left: 26px; }
+    .trace li { padding: 4px 0 4px 4px; font-size: .85rem; line-height: 1.5; }
+    .trace li::marker { color: var(--muted); }
+    .empty { margin: 10px 0 0; font-size: .9rem; }
+    @media (max-width: 520px) { main { padding-inline: 16px; } label, select { width: 100%; } }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Schrödinger’s Charge</h1>
+    <p>Simulate a ₹499 payment with ID <code>demo-1</code>. Follow the merchant and provider records as the payment recovers.</p>
+
+    <div class="controls">
+      <label for="scenario">Scenario
+        <select id="scenario">
+          <option value="timeout">Response times out after commit</option>
+          <option value="offline">Request fails before commit</option>
+          <option value="normal">Provider confirms the charge</option>
+        </select>
+      </label>
+      <div class="actions">
+        <button class="primary" id="pay">Pay ₹499</button>
+        <button id="reconcile">Reconcile</button>
+        <button id="race">Race two retries</button>
+        <button id="reset">Reset</button>
+      </div>
+    </div>
+
+    <div class="records">
+      <section class="record">
+        <h2>Merchant payment</h2>
+        <output id="merchant-state">No payment</output>
+      </section>
+      <section class="record">
+        <h2>Provider ledger</h2>
+        <output id="provider-state">0 charges</output>
+      </section>
+    </div>
+
+    <section class="trace" aria-labelledby="trace-title">
+      <h2 id="trace-title">Request trace</h2>
+      <p class="empty" id="empty">Choose a scenario and send the payment.</p>
+      <ol id="events" aria-live="polite"></ol>
+    </section>
+  </main>
+  <script>
+    const scenario = document.querySelector("#scenario");
+    const pay = document.querySelector("#pay");
+    const reconcile = document.querySelector("#reconcile");
+    const race = document.querySelector("#race");
+    const reset = document.querySelector("#reset");
+    const merchantState = document.querySelector("#merchant-state");
+    const providerState = document.querySelector("#provider-state");
+    const events = document.querySelector("#events");
+    const empty = document.querySelector("#empty");
+
+    let merchant = "";
+    let committed = false;
+
+    function log(message) {
+      const item = document.createElement("li");
+      item.textContent = message;
+      events.append(item);
+    }
+
+    function render() {
+      merchantState.value = merchant || "No payment";
+      merchantState.dataset.state = merchant;
+      providerState.value = committed ? "1 charge" : "0 charges";
+      providerState.dataset.state = committed ? "paid" : "";
+      scenario.disabled = Boolean(merchant);
+      pay.disabled = Boolean(merchant);
+      reconcile.disabled = !merchant;
+      race.disabled = merchant !== "pending" || committed;
+      reset.disabled = !merchant;
+      empty.hidden = events.childElementCount > 0;
+    }
+
+    function post(worker) {
+      log(worker + " → POST /charges · demo-1 · 49900 paise");
+      if (committed) {
+        log("Provider → 200 · existing demo-1");
+        return;
+      }
+      committed = true;
+      log("Provider commits demo-1 · 1 charge");
+    }
+
+    function markPaid() {
+      merchant = "paid";
+      log("Merchant saves paid.");
+    }
+
+    pay.addEventListener("click", () => {
+      merchant = "pending";
+      log("Merchant saves demo-1 as pending.");
+      if (scenario.value === "offline") {
+        log("POST /charges fails before the provider receives it.");
+      } else {
+        post("Merchant");
+        if (scenario.value === "timeout") {
+          log("Merchant times out. The local payment stays pending.");
+        } else {
+          log("Provider → 201 · new demo-1");
+          markPaid();
+        }
+      }
+      render();
+    });
+
+    reconcile.addEventListener("click", () => {
+      if (merchant === "paid") {
+        log("No pending payments. The merchant sends zero requests.");
+      } else {
+        log("Fresh merchant process → GET /charges/demo-1");
+        if (committed) {
+          log("Provider → 200 · existing demo-1");
+        } else {
+          log("Provider → 404 · charge missing");
+          post("Merchant retry");
+          log("Provider → 201 · new demo-1");
+        }
+        markPaid();
+      }
+      render();
+    });
+
+    race.addEventListener("click", () => {
+      log("Workers A and B both look up demo-1 and receive 404.");
+      post("Worker A");
+      log("Provider → 201 · new demo-1");
+      post("Worker B");
+      markPaid();
+      render();
+    });
+
+    reset.addEventListener("click", () => {
+      merchant = "";
+      committed = false;
+      events.replaceChildren();
+      render();
+    });
+
+    render();
+  </script>
+</body>
+</html>

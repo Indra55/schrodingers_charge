@@ -73,3 +73,9 @@ The payment ID is the idempotency key. It identifies one logical charge across a
 If two workers both see HTTP 404, both can send the same charge. The provider inserts the row with `ON CONFLICT (payment_id) DO NOTHING`. The primary key allows only one insert. The other request reads and returns the committed row. The provider returns HTTP 409 if a request reuses the ID with a different amount.
 
 Use `./bin/provider -help` and `./bin/merchant -help` to see the flags. Put merchant flags before the command.
+
+## Browser simulation
+
+Open `docs/index.html` in a browser. Deploy the `docs` directory to a static host to share the simulation.
+
+Choose **Request fails before commit**, then click **Pay ₹499** and **Race two retries**. The trace shows two HTTP 404 responses, two POST requests, and one provider charge.
