@@ -35,17 +35,20 @@ func main() {
 	}
 
 	p := provider{ledger: ledger{db: db}, responseDelay: *delay}
-	mux := http.NewServeMux()
-	mux.HandleFunc("POST /charges", p.createCharge)
-	mux.HandleFunc("GET /charges/{id}", p.getCharge)
-
 	server := http.Server{
 		Addr:              *addr,
-		Handler:           mux,
+		Handler:           p.handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	log.Printf("provider listening on %s", *addr)
 	log.Fatal(server.ListenAndServe())
+}
+
+func (p provider) handler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /charges", p.createCharge)
+	mux.HandleFunc("GET /charges/{id}", p.getCharge)
+	return mux
 }
 
 func (p provider) createCharge(w http.ResponseWriter, r *http.Request) {
