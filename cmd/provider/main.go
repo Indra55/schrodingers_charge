@@ -14,17 +14,19 @@ import (
 )
 
 type provider struct {
-	ledger ledger
+	ledger        ledger
+	responseDelay time.Duration
 }
 
 func main() {
 	addr := flag.String("addr", "127.0.0.1:8080", "HTTP listen address")
 	dbPath := flag.String("db", "provider.db", "provider SQLite database")
+	delay := flag.Duration("response-delay", 0, "delay before responding to a newly committed charge")
 	flag.Parse()
 
-	if flag.NArg() != 0 {
+	if *delay < 0 || flag.NArg() != 0 {
 		flag.Usage()
-		log.Fatal("expected no positional arguments")
+		log.Fatal("expected no positional arguments and a non-negative response delay")
 	}
 
 	db, err := payment.OpenDB(*dbPath, schema)
@@ -32,7 +34,7 @@ func main() {
 		log.Fatalf("open provider database: %v", err)
 	}
 
-	p := provider{ledger: ledger{db: db}}
+	p := provider{ledger: ledger{db: db}, responseDelay: *delay}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /charges", p.createCharge)
 	mux.HandleFunc("GET /charges/{id}", p.getCharge)
@@ -65,6 +67,15 @@ func (p provider) createCharge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if inserted {
+		if p.responseDelay > 0 {
+			timer := time.NewTimer(p.responseDelay)
+			defer timer.Stop()
+			select {
+			case <-timer.C:
+			case <-r.Context().Done():
+				return
+			}
+		}
 		writeCharge(w, http.StatusCreated, requested)
 		return
 	}
