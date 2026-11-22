@@ -19,6 +19,14 @@ const demoAmount = 49900
 
 var demoID = regexp.MustCompile(`^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$`)
 
+const demoStreamType = "application/x-ndjson"
+
+type demoPacket struct {
+	Event *traceEvent `json:"event,omitempty"`
+	State *demoState  `json:"state,omitempty"`
+	Error string      `json:"error,omitempty"`
+}
+
 type demoState struct {
 	MerchantStatus string   `json:"merchant_status"`
 	ProviderCount  int      `json:"provider_count"`
@@ -74,15 +82,41 @@ func (m merchant) demo(w http.ResponseWriter, r *http.Request) {
 	}
 
 	state := demoState{Events: []string{}}
+	action := r.PathValue("action")
+	encoder := json.NewEncoder(w)
+	flusher, canFlush := w.(http.Flusher)
+	streaming := action != "" && r.Header.Get("Accept") == demoStreamType && canFlush
+	started := false
+	writePacket := func(packet demoPacket) {
+		if !started {
+			w.Header().Set("Content-Type", demoStreamType)
+			w.Header().Set("X-Accel-Buffering", "no")
+			started = true
+		}
+		if encoder.Encode(packet) == nil {
+			flusher.Flush()
+		}
+	}
+	reportFailure := func(message string) {
+		if started {
+			writePacket(demoPacket{Error: message})
+		} else {
+			http.Error(w, message, http.StatusBadGateway)
+		}
+	}
+
 	var traceLock sync.Mutex
-	m.trace = func(message string) {
+	m.trace = func(event traceEvent) {
 		traceLock.Lock()
-		state.Events = append(state.Events, message)
-		traceLock.Unlock()
+		defer traceLock.Unlock()
+		if streaming {
+			writePacket(demoPacket{Event: &event})
+		} else if event.Phase != "request" {
+			state.Events = append(state.Events, event.Message)
+		}
 	}
 
 	charge := payment.Charge{PaymentID: id, AmountPaise: demoAmount}
-	action := r.PathValue("action")
 	var actionErr error
 	switch action {
 	case "":
@@ -115,7 +149,7 @@ func (m merchant) demo(w http.ResponseWriter, r *http.Request) {
 		case err != nil:
 			actionErr = err
 		case local.status == "paid":
-			m.record("Already paid. Nothing to reconcile.")
+			m.record("merchant", "Paid", "Already paid. Nothing to reconcile.")
 		case action == "reconcile":
 			actionErr = m.reconcileCharge(local.Charge)
 		default:
@@ -129,13 +163,13 @@ func (m merchant) demo(w http.ResponseWriter, r *http.Request) {
 	status, err := m.demoStatus(id)
 	if err != nil {
 		log.Printf("read demo payment: %v", err)
-		http.Error(w, "merchant database unavailable", http.StatusBadGateway)
+		reportFailure("merchant database unavailable")
 		return
 	}
 	count, err := m.providerCount(r.Context(), id)
 	if err != nil {
 		log.Printf("read demo ledger: %v", err)
-		http.Error(w, "provider ledger unavailable", http.StatusBadGateway)
+		reportFailure("provider ledger unavailable")
 		return
 	}
 	state.MerchantStatus = status
@@ -144,16 +178,20 @@ func (m merchant) demo(w http.ResponseWriter, r *http.Request) {
 	code := http.StatusOK
 	if actionErr != nil {
 		if status == "pending" && expectedDemoFault(m.fault, actionErr, count) {
-			m.record("Merchant kept the payment pending.")
+			m.record("note", "", "Merchant kept the payment pending.")
 		} else {
 			log.Printf("demo %s: %v", action, actionErr)
 			state.Error = "The merchant could not complete the action. Check the payment state and try again."
 			code = http.StatusBadGateway
 		}
 	}
+	if streaming {
+		writePacket(demoPacket{State: &state})
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	json.NewEncoder(w).Encode(state)
+	encoder.Encode(state)
 }
 
 func expectedDemoFault(fault string, err error, count int) bool {
@@ -202,7 +240,9 @@ func (m merchant) race(charge payment.Charge) error {
 	workers := make([]merchant, 0, 2)
 	for _, name := range []string{"Worker A", "Worker B"} {
 		worker := m
-		worker.trace = func(message string) { m.record(name + " · " + message) }
+		worker.trace = func(event traceEvent) {
+			m.record(event.Phase, event.Label, name+" · "+event.Message)
+		}
 		found, err := worker.lookup(charge)
 		if err != nil {
 			return err

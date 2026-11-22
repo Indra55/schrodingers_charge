@@ -6,3 +6,5 @@ services:
     buildCommand: mkdir -p bin && go build -o bin/ ./cmd/provider ./cmd/merchant
     startCommand: bash ./scripts/demo.sh
     healthCheckPath: /healthz
+    domains:
+      - charge.hitanshu.xyz

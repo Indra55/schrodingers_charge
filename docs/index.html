@@ -3,64 +3,89 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="Simulate a payment timeout, reconciliation, and concurrent retries.">
+  <meta name="description" content="Watch a test payment recover from an HTTP timeout without creating a duplicate charge.">
   <title>Schrödinger’s Charge</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
   <style>
     :root {
       color-scheme: dark;
-      font-family: system-ui, sans-serif;
-      background: #101412;
-      color: #edf1e9;
-      --border: #36423b;
-      --muted: #a5b4aa;
-      --accent: #d3f588;
-      --mono: ui-monospace, SFMono-Regular, Consolas, monospace;
+      background: #000;
+      color: #fff;
+      font-family: "JetBrains Mono", ui-monospace, monospace;
+      font-size: 14px;
+      --muted: #aaa;
+      --line: #343434;
     }
     * { box-sizing: border-box; }
     body { margin: 0; }
-    main { max-width: 860px; margin: 0 auto; padding: clamp(24px, 6vw, 76px) 24px; }
-    h1 { margin: 0; font-size: clamp(2.25rem, 6vw, 4.25rem); line-height: 1; letter-spacing: -.055em; }
-    p { color: var(--muted); line-height: 1.55; }
-    code, output, li { font-family: var(--mono); overflow-wrap: anywhere; }
+    main { width: min(100% - 40px, 920px); margin: 0 auto; padding-block: clamp(32px, 7vw, 90px); }
+    header { margin-bottom: 34px; }
+    h1, h2, h3, p { margin: 0; }
+    h1 { font-size: clamp(2rem, 5vw, 3.9rem); font-weight: 700; letter-spacing: -.075em; line-height: 1.08; }
+    h2 { font-size: 1rem; font-weight: 600; }
+    header p { max-width: 62ch; margin-top: 16px; color: var(--muted); line-height: 1.65; }
     .controls, .actions { display: flex; flex-wrap: wrap; align-items: end; gap: 8px; }
-    .controls { margin-top: 32px; gap: 12px; }
-    label { display: grid; gap: 6px; font-size: .85rem; color: var(--muted); }
+    .controls { gap: 12px 20px; padding-block: 18px; border-block: 1px solid var(--line); }
+    label { display: grid; gap: 6px; color: var(--muted); font-size: .8rem; }
     button, select {
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      background: #1e2922;
-      color: inherit;
       min-height: 42px;
-      padding: 9px 12px;
+      padding: 8px 12px;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      background: #000;
+      color: #fff;
       font: inherit;
-      font-size: .9rem;
+      font-size: .88rem;
     }
+    select { padding-right: 20px; }
     button { cursor: pointer; }
-    button:enabled:hover { background: #2e3b32; }
-    button.primary:enabled { background: var(--accent); color: #19250c; border-color: var(--accent); font-weight: 700; }
-    button:disabled { opacity: .45; cursor: default; }
-    :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
-    .records { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 20px 0 26px; }
-    .record, .trace { border: 1px solid var(--border); border-radius: 12px; background: #18201b; }
-    .record { padding: 16px; }
-    h2 { font-size: .9rem; font-weight: 650; margin: 0; }
-    output { display: block; margin-top: 10px; font-size: clamp(1.1rem, 4vw, 1.6rem); }
-    output[data-state="pending"] { color: #ffd190; }
-    output[data-state="paid"] { color: var(--accent); }
-    .trace { padding: 16px; }
-    .trace ol { margin: 12px 0 0; padding-left: 26px; }
-    .trace li { padding: 4px 0 4px 4px; font-size: .85rem; line-height: 1.5; }
+    button:enabled:hover { border-color: #fff; }
+    button.primary:enabled { border-color: #fff; background: #fff; color: #000; font-weight: 700; }
+    button:disabled { color: #777; cursor: default; }
+    select:disabled { color: #999; }
+    :focus-visible { outline: 2px solid #fff; outline-offset: 3px; }
+    .flow { padding-block: 24px; border-bottom: 1px solid var(--line); }
+    .nodes { display: grid; grid-template-columns: minmax(0, 1fr) 48px minmax(0, 1fr) 48px minmax(0, 1fr); align-items: center; margin-top: 14px; }
+    .node { display: grid; gap: 9px; min-height: 108px; padding: 14px; border: 1px solid var(--line); border-radius: 4px; }
+    .node[data-active="true"] { border-color: #fff; }
+    .node h3 { align-self: end; color: var(--muted); font-size: .8rem; font-weight: 500; }
+    .node output { font-size: clamp(1rem, 2.4vw, 1.45rem); font-weight: 700; line-height: 1.25; overflow-wrap: anywhere; }
+    .edge { position: relative; height: 1px; color: #555; background: currentColor; }
+    .edge::after { content: ""; position: absolute; top: -4px; right: 2px; width: 8px; height: 8px; border-top: 1px solid; border-right: 1px solid; transform: rotate(45deg); }
+    .edge[data-direction="forward"], .edge[data-direction="back"] { color: #fff; }
+    .edge[data-direction="back"]::after { right: auto; left: 2px; transform: rotate(225deg); }
+    .edge[data-direction="fault"] { height: 0; border-top: 1px dashed #aaa; background: none; }
+    .edge[data-direction="fault"]::after { display: none; }
+    .flow-status { min-height: 1.5em; margin-top: 14px; color: var(--muted); font-size: .85rem; line-height: 1.5; }
+    .flow-status[data-error="true"] { color: #fff; }
+    .trace { padding-top: 22px; }
+    .trace-head { display: flex; flex-wrap: wrap; gap: 8px 16px; justify-content: space-between; align-items: baseline; }
+    .payment-id { color: var(--muted); font-size: .73rem; overflow-wrap: anywhere; }
+    .payment-id code { color: #ddd; font: inherit; }
+    .trace ol { margin: 14px 0 0; padding-left: 28px; }
+    .trace li { padding: 4px 0 4px 4px; line-height: 1.55; font-size: .84rem; overflow-wrap: anywhere; }
     .trace li::marker { color: var(--muted); }
-    .empty, .feedback { margin: 10px 0 0; font-size: .9rem; }
-    .feedback[data-error="true"] { color: #ffd190; }
-    @media (max-width: 520px) { main { padding-inline: 16px; } label, select { width: 100%; } }
+    .empty { margin-top: 12px; color: var(--muted); font-size: .84rem; }
+    @media (max-width: 560px) {
+      main { width: min(100% - 28px, 920px); }
+      .controls label, select { width: 100%; }
+      .nodes { grid-template-columns: 1fr; }
+      .node { min-height: 64px; gap: 6px; padding: 10px 12px; }
+      .edge { width: 1px; height: 22px; margin-left: 22px; }
+      .edge::after { top: auto; right: auto; bottom: 2px; left: -4px; transform: rotate(135deg); }
+      .edge[data-direction="back"]::after { top: 2px; bottom: auto; left: -4px; transform: rotate(-45deg); }
+      .edge[data-direction="fault"] { width: 0; height: 22px; border: 0; border-left: 1px dashed #aaa; }
+    }
   </style>
 </head>
 <body>
   <main>
-    <h1>Schrödinger’s Charge</h1>
-    <p>Send a ₹499 test payment through the Go merchant and mock provider. Follow the SQLite records as the payment recovers.</p>
-    <p>Payment ID <code id="payment-id">Loading…</code></p>
+    <header>
+      <h1>Schrödinger’s Charge</h1>
+      <p>What happens when a ₹499 payment goes through, but the merchant times out?</p>
+    </header>
 
     <div class="controls">
       <label for="scenario">Scenario
@@ -78,37 +103,57 @@
       </div>
     </div>
 
-    <div class="records">
-      <section class="record">
-        <h2>Merchant payment</h2>
-        <output id="merchant-state">Loading…</output>
-      </section>
-      <section class="record">
-        <h2>Provider ledger</h2>
-        <output id="provider-state">Loading…</output>
-      </section>
-    </div>
+    <section class="flow" aria-labelledby="flow-title">
+      <h2 id="flow-title">Live flow</h2>
+      <div class="nodes">
+        <div class="node" id="browser-node">
+          <h3>Browser</h3>
+          <output id="browser-state">Ready</output>
+        </div>
+        <div class="edge" id="browser-edge" aria-hidden="true"></div>
+        <div class="node" id="merchant-node">
+          <h3>Go merchant · SQLite</h3>
+          <output id="merchant-state">Loading…</output>
+        </div>
+        <div class="edge" id="provider-edge" aria-hidden="true"></div>
+        <div class="node" id="provider-node">
+          <h3>Mock provider · SQLite</h3>
+          <output id="provider-state">Loading…</output>
+        </div>
+      </div>
+      <p class="flow-status" id="feedback" role="status"></p>
+    </section>
 
     <section class="trace" aria-labelledby="trace-title">
-      <h2 id="trace-title">Request trace</h2>
-      <p class="empty" id="empty">Run an action to see the Go request trace.</p>
+      <div class="trace-head">
+        <h2 id="trace-title">Request trace</h2>
+        <p class="payment-id">Payment ID <code id="payment-id">Loading…</code></p>
+      </div>
+      <p class="empty" id="empty">Requests and SQLite updates appear here.</p>
       <ol id="events" aria-live="polite"></ol>
     </section>
-    <p class="feedback" id="feedback" role="status"></p>
   </main>
   <script>
-    const scenario = document.querySelector("#scenario");
-    const pay = document.querySelector("#pay");
-    const reconcile = document.querySelector("#reconcile");
-    const race = document.querySelector("#race");
-    const reset = document.querySelector("#reset");
-    const merchantState = document.querySelector("#merchant-state");
-    const providerState = document.querySelector("#provider-state");
-    const paymentID = document.querySelector("#payment-id");
-    const events = document.querySelector("#events");
-    const empty = document.querySelector("#empty");
-    const feedback = document.querySelector("#feedback");
+    const get = id => document.getElementById(id);
+    const scenario = get("scenario");
+    const pay = get("pay");
+    const reconcile = get("reconcile");
+    const race = get("race");
+    const reset = get("reset");
+    const browserState = get("browser-state");
+    const merchantState = get("merchant-state");
+    const providerState = get("provider-state");
+    const browserNode = get("browser-node");
+    const merchantNode = get("merchant-node");
+    const providerNode = get("provider-node");
+    const browserEdge = get("browser-edge");
+    const providerEdge = get("provider-edge");
+    const paymentID = get("payment-id");
+    const events = get("events");
+    const empty = get("empty");
+    const feedback = get("feedback");
     const storageKey = "schrodinger-charge-payment-id";
+    const streamType = "application/x-ndjson";
 
     let id = sessionStorage.getItem(storageKey) || newPaymentID();
     let state = null;
@@ -120,14 +165,19 @@
       return value;
     }
 
+    function highlight(node, direction) {
+      browserNode.dataset.active = node === "browser";
+      merchantNode.dataset.active = node === "merchant";
+      providerNode.dataset.active = node === "provider";
+      if (direction !== undefined) providerEdge.dataset.direction = direction;
+    }
+
     function render() {
       paymentID.textContent = id;
       const status = state?.merchant_status;
       const count = state?.provider_count;
-      merchantState.value = status === "none" ? "No payment" : status || "—";
-      merchantState.dataset.state = status || "";
+      merchantState.value = { none: "No payment", pending: "Pending", paid: "Paid" }[status] || "—";
       providerState.value = count === undefined ? "—" : count + (count === 1 ? " charge" : " charges");
-      providerState.dataset.state = count ? "paid" : "";
       scenario.disabled = busy || status !== "none";
       pay.disabled = busy || status !== "none";
       reconcile.disabled = busy || !status || status === "none";
@@ -136,35 +186,100 @@
       empty.hidden = events.childElementCount > 0;
     }
 
+    function appendTrace(message) {
+      const item = document.createElement("li");
+      item.textContent = message;
+      events.append(item);
+      empty.hidden = true;
+    }
+
+    function showEvent(event) {
+      appendTrace(event.message);
+      switch (event.phase) {
+        case "merchant":
+          if (state) state.merchant_status = event.label.toLowerCase();
+          merchantState.value = event.label;
+          highlight("merchant");
+          feedback.textContent = event.message;
+          break;
+        case "request":
+          highlight("provider", "forward");
+          feedback.textContent = "Waiting for " + event.label;
+          break;
+        case "response":
+          highlight("merchant", "back");
+          feedback.textContent = "Provider replied " + event.label;
+          break;
+        case "fault":
+          highlight("merchant", "fault");
+          feedback.textContent = event.message;
+          break;
+      }
+    }
+
+    async function readStream(response) {
+      const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+      let pending = "";
+      let result;
+      function packet(line) {
+        const value = JSON.parse(line);
+        if (value.error) throw new Error(value.error);
+        if (value.event) showEvent(value.event);
+        if (value.state) result = value.state;
+      }
+      try {
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          const lines = (pending + value).split("\n");
+          pending = lines.pop();
+          for (const line of lines) if (line) packet(line);
+        }
+        if (pending.trim()) packet(pending);
+      } finally {
+        reader.releaseLock();
+      }
+      if (!result) throw new Error("The server closed the trace early. Reload to check the payment.");
+      return result;
+    }
+
     async function run(action = "") {
       busy = true;
+      browserState.value = "Waiting";
+      browserEdge.dataset.direction = action ? "forward" : "";
+      highlight("browser", "");
       feedback.dataset.error = "false";
-      feedback.textContent = "Waiting for the Go backend…";
+      feedback.textContent = action ? "Sending " + action + " to the Go merchant…" : "Reading both ledgers…";
       render();
 
       try {
-        const options = { method: action ? "POST" : "GET" };
+        const options = { method: action ? "POST" : "GET", headers: {} };
+        if (action) options.headers.Accept = streamType;
         if (action === "pay") {
-          options.headers = { "Content-Type": "application/json" };
+          options.headers["Content-Type"] = "application/json";
           options.body = JSON.stringify({ scenario: scenario.value });
         }
         const path = "/api/demo/" + id + (action ? "/" + action : "");
         const response = await fetch(path, options);
-        if (!response.headers.get("Content-Type")?.includes("application/json")) {
-          throw new Error((await response.text()).trim() || "The Go backend is unavailable.");
+        const type = response.headers.get("Content-Type") || "";
+        if (type.includes(streamType)) {
+          state = await readStream(response);
+        } else if (type.includes("application/json")) {
+          state = await response.json();
+          for (const message of state.events) appendTrace(message);
+        } else {
+          const message = type.includes("text/plain") ? (await response.text()).trim() : "";
+          throw new Error(message || "The Go backend is unavailable.");
         }
 
-        state = await response.json();
-        for (const message of state.events) {
-          const item = document.createElement("li");
-          item.textContent = message;
-          events.append(item);
-        }
-        if (!response.ok) {
-          throw new Error(state.error || "The action failed.");
-        }
-        feedback.textContent = "";
+        if (!response.ok || state.error) throw new Error(state.error || "The action failed.");
+        browserState.value = action ? "Received" : "Ready";
+        browserEdge.dataset.direction = action ? "back" : "";
+        highlight(action ? "browser" : "");
+        feedback.textContent = action ? "Read the payment state and charge count from SQLite." : "";
       } catch (error) {
+        browserState.value = "Error";
+        browserEdge.dataset.direction = "fault";
         feedback.dataset.error = "true";
         feedback.textContent = error.message;
       } finally {

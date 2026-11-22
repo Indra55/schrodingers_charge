@@ -18,7 +18,7 @@ type merchant struct {
 	client   *http.Client
 	provider string
 	fault    string
-	trace    func(string)
+	trace    func(traceEvent)
 }
 
 func main() {
@@ -112,14 +112,14 @@ func (m merchant) pay(charge payment.Charge) error {
 	}
 	if local.status == "paid" {
 		if m.trace != nil {
-			m.record("Merchant already marked the payment paid.")
+			m.record("merchant", "Paid", "Merchant already marked the payment paid.")
 		} else {
 			printStatus(local.Charge, local.status)
 		}
 		return nil
 	}
 
-	m.record("Merchant saved pending.")
+	m.record("merchant", "Pending", "Merchant saved pending.")
 	if err := m.send(charge); err != nil {
 		return fmt.Errorf("%s pending (%d paise): %w", charge.PaymentID, charge.AmountPaise, err)
 	}
@@ -140,15 +140,21 @@ func (m merchant) markPaid(charge payment.Charge) error {
 		return err
 	}
 	if m.trace != nil {
-		m.record("Merchant saved paid.")
+		m.record("merchant", "Paid", "Merchant saved paid.")
 	} else {
 		printStatus(charge, "paid")
 	}
 	return nil
 }
 
-func (m merchant) record(message string) {
+type traceEvent struct {
+	Phase   string `json:"phase"`
+	Label   string `json:"label"`
+	Message string `json:"message"`
+}
+
+func (m merchant) record(phase, label, message string) {
 	if m.trace != nil {
-		m.trace(message)
+		m.trace(traceEvent{Phase: phase, Label: label, Message: message})
 	}
 }

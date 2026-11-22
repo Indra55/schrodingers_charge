@@ -47,6 +47,13 @@ func (m merchant) request(method, path string, body io.Reader, expected payment.
 		}
 	}
 
+	label := method + " /charges"
+	if method == http.MethodGet {
+		label += "/{id}"
+	}
+	if m.trace != nil {
+		m.record("request", label, fmt.Sprintf("Merchant sending %s %s", method, path))
+	}
 	resp, err := m.client.Do(req)
 	if err != nil {
 		if m.trace != nil {
@@ -54,13 +61,13 @@ func (m merchant) request(method, path string, body io.Reader, expected payment.
 			if errors.Is(err, context.DeadlineExceeded) {
 				outcome = "timeout"
 			}
-			m.record(fmt.Sprintf("%s %s → %s", method, path, outcome))
+			m.record("fault", outcome, fmt.Sprintf("%s %s → %s", method, path, outcome))
 		}
 		return false, err
 	}
 	defer resp.Body.Close()
 	if m.trace != nil {
-		m.record(fmt.Sprintf("%s %s → HTTP %d", method, path, resp.StatusCode))
+		m.record("response", fmt.Sprintf("HTTP %d", resp.StatusCode), fmt.Sprintf("%s %s → HTTP %d", method, path, resp.StatusCode))
 	}
 
 	if method == http.MethodGet && resp.StatusCode == http.StatusNotFound {
