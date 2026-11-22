@@ -32,7 +32,7 @@ func run(args []string) error {
 	provider := flags.String("provider", "http://127.0.0.1:8080", "provider base URL")
 	timeout := flags.Duration("timeout", 500*time.Millisecond, "HTTP timeout per request")
 	flags.Usage = func() {
-		fmt.Fprintln(flags.Output(), "Usage: merchant [flags] pay <id> <paise> | status <id>")
+		fmt.Fprintln(flags.Output(), "Usage: merchant [flags] pay <id> <paise> | status <id> | reconcile")
 		flags.PrintDefaults()
 	}
 	if err := flags.Parse(args); err != nil {
@@ -62,6 +62,10 @@ func run(args []string) error {
 		if len(args) != 2 {
 			return fmt.Errorf("usage: merchant [flags] status <id>")
 		}
+	case "reconcile":
+		if len(args) != 1 {
+			return fmt.Errorf("usage: merchant [flags] reconcile")
+		}
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
@@ -80,10 +84,14 @@ func run(args []string) error {
 		client:   &http.Client{Timeout: *timeout},
 		provider: strings.TrimRight(*provider, "/"),
 	}
-	if args[0] == "pay" {
+	switch args[0] {
+	case "pay":
 		return m.pay(requested)
+	case "status":
+		return m.status(args[1])
+	default:
+		return m.reconcile()
 	}
-	return m.status(args[1])
 }
 
 func (m merchant) pay(charge payment.Charge) error {

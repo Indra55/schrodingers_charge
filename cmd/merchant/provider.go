@@ -15,32 +15,44 @@ func (m merchant) send(charge payment.Charge) error {
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequest(http.MethodPost, m.provider+"/charges", bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	return m.confirm(req, charge)
+	_, err = m.request(http.MethodPost, "/charges", bytes.NewReader(body), charge)
+	return err
 }
 
-func (m merchant) confirm(req *http.Request, expected payment.Charge) error {
+func (m merchant) lookup(charge payment.Charge) (bool, error) {
+	return m.request(http.MethodGet, "/charges/"+charge.PaymentID, nil, charge)
+}
+
+func (m merchant) request(method, path string, body io.Reader, expected payment.Charge) (bool, error) {
+	req, err := http.NewRequest(method, m.provider+path, body)
+	if err != nil {
+		return false, err
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+
 	resp, err := m.client.Do(req)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		return fmt.Errorf("provider POST returned %s", resp.Status)
+	if method == http.MethodGet && resp.StatusCode == http.StatusNotFound {
+		return false, nil
+	}
+	if resp.StatusCode != http.StatusOK &&
+		!(method == http.MethodPost && resp.StatusCode == http.StatusCreated) {
+		return false, fmt.Errorf("provider %s returned %s", method, resp.Status)
 	}
 
 	var confirmed payment.Charge
 	decoder := json.NewDecoder(io.LimitReader(resp.Body, 4096))
 	if err := decoder.Decode(&confirmed); err != nil {
-		return fmt.Errorf("decode provider charge: %w", err)
+		return false, fmt.Errorf("decode provider charge: %w", err)
 	}
 	if confirmed != expected {
-		return fmt.Errorf("provider returned a different payment ID or amount")
+		return false, fmt.Errorf("provider returned a different payment ID or amount")
 	}
-	return nil
+	return true, nil
 }

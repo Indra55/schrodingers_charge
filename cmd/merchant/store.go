@@ -61,3 +61,24 @@ func (s store) markPaid(id string) error {
 	}
 	return nil
 }
+
+func (s store) pending() ([]payment.Charge, error) {
+	rows, err := s.db.Query(`
+		SELECT payment_id, amount_paise FROM payments
+		WHERE status = 'pending' ORDER BY payment_id
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var pending []payment.Charge
+	for rows.Next() {
+		var charge payment.Charge
+		if err := rows.Scan(&charge.PaymentID, &charge.AmountPaise); err != nil {
+			return nil, err
+		}
+		pending = append(pending, charge)
+	}
+	return pending, rows.Err()
+}
