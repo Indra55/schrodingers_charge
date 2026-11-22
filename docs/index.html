@@ -139,7 +139,7 @@
         <button id="race">Race two retries</button>
         <button id="reset">Reset</button>
       </div>
-      <p class="scenario-help" id="scenario-help">The provider saves the ₹499 charge and delays its reply by 2 seconds. The merchant times out after 500 ms and stays pending.</p>
+      <p class="scenario-help" id="scenario-help">On Pay, the provider saves ₹499 and delays its reply by 2 seconds. The merchant times out after 500 ms and stays pending.</p>
     </div>
 
     <section class="flow" aria-labelledby="flow-title">
@@ -198,8 +198,8 @@
     const scenarioHelp = get("scenario-help");
     const scenarioDescriptions = {
       timeout: scenarioHelp.textContent,
-      offline: "The provider returns HTTP 503 before saving the charge. The merchant stays pending and the provider has zero charges.",
-      normal: "The provider saves one ₹499 charge and replies before the timeout. The merchant marks the payment paid."
+      offline: "On Pay, the provider returns HTTP 503 before saving the charge. That leaves a pending payment and zero charges for this ID.",
+      normal: "On Pay, the provider saves one ₹499 charge and replies before the timeout. The merchant marks the payment paid."
     };
     const pay = get("pay");
     const reconcile = get("reconcile");
@@ -347,7 +347,7 @@
 
       const copy = document.createElement("span");
       copy.className = "trace-copy";
-      copy.textContent = event.message;
+      copy.textContent = event.message.replace("/charges/" + id, "/charges/{id}");
       item.append(track, copy);
       events.append(item);
 
