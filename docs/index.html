@@ -70,13 +70,18 @@
     .empty { margin-top: 12px; color: var(--muted); font-size: .84rem; }
     @media (max-width: 560px) {
       main { width: min(100% - 28px, 920px); }
-      .controls label, select { width: 100%; }
+      header { margin-bottom: 24px; }
+      .controls label, select, .actions { width: 100%; }
+      .actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      button, select { min-height: 44px; }
       .nodes { grid-template-columns: 1fr; }
-      .node { min-height: 64px; gap: 6px; padding: 10px 12px; }
-      .edge { width: 1px; height: 22px; margin-left: 22px; }
+      .node { grid-template-columns: minmax(0, 1fr) auto; align-items: center; min-height: 54px; gap: 8px; padding: 10px 12px; }
+      .node h3 { align-self: center; }
+      .node output { text-align: right; }
+      .edge { width: 1px; height: 16px; margin-left: 22px; }
       .edge::after { top: auto; right: auto; bottom: 2px; left: -4px; transform: rotate(135deg); }
       .edge[data-direction="back"]::after { top: 2px; bottom: auto; left: -4px; transform: rotate(-45deg); }
-      .edge[data-direction="fault"] { width: 0; height: 22px; border: 0; border-left: 1px dashed #aaa; }
+      .edge[data-direction="fault"] { width: 0; height: 16px; border: 0; border-left: 1px dashed #aaa; }
     }
   </style>
 </head>
